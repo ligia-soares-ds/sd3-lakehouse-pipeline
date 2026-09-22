@@ -27,6 +27,22 @@ print("Respondentes analisados:", total)
 
 # COMMAND ----------
 
+import matplotlib.pyplot as plt
+from pyspark.sql import functions as F
+
+plt.rcParams.update({
+    "figure.dpi": 110,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "font.size": 10,
+})
+
+CORES = {"Maquiavelismo": "#4C72B0", "Narcisismo": "#DD8452", "Psicopatia": "#55A868"}
+
+escores_pd = spark.table("dark_triad.gold.fato_escore_respondente").toPandas()
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Pergunta 1 — Qual traço apresenta os escores mais altos e como se distribuem?
 
@@ -50,6 +66,53 @@ print("Respondentes analisados:", total)
 # MAGIC        ROUND(PERCENTILE(escore_psicopatia, 0.5), 2), ROUND(MIN(escore_psicopatia), 2), ROUND(MAX(escore_psicopatia), 2)
 # MAGIC FROM dark_triad.gold.fato_escore_respondente
 # MAGIC ORDER BY media DESC
+
+# COMMAND ----------
+
+# Figura 1 — Distribuição dos escores por traço (versão corrigida)
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+plt.rcParams.update({"figure.dpi": 120, "font.size": 10,
+                     "axes.spines.top": False, "axes.spines.right": False})
+
+CORES = {"Maquiavelismo": "#4C72B0", "Narcisismo": "#DD8452", "Psicopatia": "#55A868"}
+
+escores_pd = spark.table("dark_triad.gold.fato_escore_respondente").toPandas()
+
+# Os escores são médias de 9 itens, então só assumem múltiplos de 1/9.
+# Alinho os bins a esse passo para não criar faixas vazias artificiais.
+passo = 1 / 9
+bins = np.arange(1 - passo / 2, 5 + passo, passo)
+
+tracos = [
+    ("Maquiavelismo", "escore_maquiavelismo", 4.33),
+    ("Narcisismo", "escore_narcisismo", 3.56),
+    ("Psicopatia", "escore_psicopatia", 3.33),
+]
+
+fig, axes = plt.subplots(3, 1, figsize=(8, 7), sharex=True)
+
+for ax, (traco, coluna, p75) in zip(axes, tracos):
+    dados = escores_pd[coluna]
+    ax.hist(dados, bins=bins, color=CORES[traco], alpha=0.85, edgecolor="white", linewidth=0.3)
+
+    ax.axvline(dados.mean(), color="#333333", linestyle="--", linewidth=1.3)
+    ax.axvline(p75, color="#C44E52", linestyle=":", linewidth=1.5)
+
+    ax.text(dados.mean(), ax.get_ylim()[1] * 0.92, f" média {dados.mean():.2f}",
+            fontsize=9, color="#333333")
+    ax.text(p75, ax.get_ylim()[1] * 0.75, f" P75 {p75:.2f}", fontsize=9, color="#C44E52")
+
+    ax.set_ylabel("Respondentes")
+    ax.set_title(traco, loc="left", fontweight="bold", color=CORES[traco])
+    ax.set_xlim(1, 5)
+
+axes[-1].set_xlabel("Escore médio (1 a 5)")
+fig.suptitle("Distribuição dos escores por traço", fontsize=13, y=0.98)
+plt.tight_layout()
+plt.show()
 
 # COMMAND ----------
 
@@ -146,6 +209,30 @@ display(
 
 # COMMAND ----------
 
+import numpy as np
+
+cols = ["escore_maquiavelismo", "escore_narcisismo", "escore_psicopatia"]
+rotulos = ["Maquiavelismo", "Narcisismo", "Psicopatia"]
+matriz = escores_pd[cols].corr().values
+
+fig, ax = plt.subplots(figsize=(5.2, 4.4))
+im = ax.imshow(matriz, cmap="RdYlBu_r", vmin=0, vmax=1)
+
+ax.set_xticks(range(3), rotulos, rotation=20, ha="right")
+ax.set_yticks(range(3), rotulos)
+
+for i in range(3):
+    for j in range(3):
+        ax.text(j, i, f"{matriz[i, j]:.2f}", ha="center", va="center",
+                color="white" if matriz[i, j] > 0.7 else "black", fontweight="bold")
+
+ax.set_title("Correlação de Pearson entre os traços")
+fig.colorbar(im, ax=ax, shrink=0.8)
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ### Coocorrência de escores elevados
 # MAGIC
@@ -204,6 +291,34 @@ display(
 
 # COMMAND ----------
 
+perfis_pd = (
+    spark.table("dark_triad.gold.fato_escore_respondente")
+    .join(spark.table("dark_triad.gold.dim_perfil"), on="id_perfil")
+    .groupBy("descricao_perfil", "qtd_tracos_elevados")
+    .count()
+    .orderBy("count")
+    .toPandas()
+)
+
+cores_qtd = {0: "#B0B0B0", 1: "#8FB3D9", 2: "#DD8452", 3: "#C44E52"}
+cores = [cores_qtd[q] for q in perfis_pd["qtd_tracos_elevados"]]
+
+fig, ax = plt.subplots(figsize=(8, 4.5))
+barras = ax.barh(perfis_pd["descricao_perfil"], perfis_pd["count"], color=cores)
+
+total = perfis_pd["count"].sum()
+for barra, valor in zip(barras, perfis_pd["count"]):
+    ax.text(barra.get_width() + total * 0.008, barra.get_y() + barra.get_height() / 2,
+            f"{100 * valor / total:.1f}%", va="center", fontsize=9)
+
+ax.set_xlabel("Respondentes")
+ax.set_title("Perfis de combinação de traços elevados")
+ax.set_xlim(0, perfis_pd["count"].max() * 1.15)
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ### Quantos traços elevados por pessoa
 
@@ -253,6 +368,32 @@ display(
 # MAGIC JOIN dark_triad.gold.dim_item i ON r.id_item = i.id_item
 # MAGIC GROUP BY r.traco, r.id_item, i.texto_item, i.invertido
 # MAGIC ORDER BY r.traco, media_corrigida DESC
+
+# COMMAND ----------
+
+itens_pd = (
+    spark.table("dark_triad.gold.fato_resposta_item")
+    .join(spark.table("dark_triad.gold.dim_item").select("id_item", "texto_item", "invertido"), on="id_item")
+    .groupBy("traco", "id_item", "texto_item", "invertido")
+    .agg(F.round(F.avg("resposta_corrigida"), 2).alias("media"))
+    .orderBy("traco", "media")
+    .toPandas()
+)
+
+fig, axes = plt.subplots(1, 3, figsize=(13, 5), sharex=True)
+
+for ax, traco in zip(axes, ["Maquiavelismo", "Narcisismo", "Psicopatia"]):
+    sub = itens_pd[itens_pd["traco"] == traco]
+    rotulos = [f"{r.id_item}*" if r.invertido else r.id_item for r in sub.itertuples()]
+    ax.barh(rotulos, sub["media"], color=CORES[traco])
+    ax.axvline(3, color="gray", linestyle=":", linewidth=1)
+    ax.set_title(traco)
+    ax.set_xlim(1, 5)
+
+axes[0].set_ylabel("Item (* = pontuação invertida)")
+fig.suptitle("Média por item após correção dos itens invertidos (linha = ponto neutro)")
+plt.tight_layout()
+plt.show()
 
 # COMMAND ----------
 
@@ -314,6 +455,37 @@ display(
 # MAGIC JOIN dark_triad.gold.dim_respondente d ON f.id_respondente = d.id_respondente
 # MAGIC GROUP BY d.origem_acesso
 # MAGIC ORDER BY respondentes DESC
+
+# COMMAND ----------
+
+origem_pd = (
+    spark.table("dark_triad.gold.fato_escore_respondente")
+    .join(spark.table("dark_triad.gold.dim_respondente"), on="id_respondente")
+    .groupBy("origem_acesso")
+    .agg(
+        F.count("*").alias("respondentes"),
+        F.round(F.avg("escore_maquiavelismo"), 2).alias("Maquiavelismo"),
+        F.round(F.avg("escore_narcisismo"), 2).alias("Narcisismo"),
+        F.round(F.avg("escore_psicopatia"), 2).alias("Psicopatia"),
+    )
+    .orderBy(F.desc("respondentes"))
+    .toPandas()
+)
+
+fig, ax = plt.subplots(figsize=(8, 4.5))
+largura = 0.25
+x = np.arange(len(origem_pd))
+
+for i, traco in enumerate(["Maquiavelismo", "Narcisismo", "Psicopatia"]):
+    ax.bar(x + i * largura, origem_pd[traco], largura, label=traco, color=CORES[traco])
+
+ax.set_xticks(x + largura, [f"{o}\n(n={n})" for o, n in zip(origem_pd["origem_acesso"], origem_pd["respondentes"])])
+ax.set_ylabel("Escore médio")
+ax.set_ylim(0, 5)
+ax.set_title("Escore médio por origem do acesso ao teste")
+ax.legend(frameon=False, ncol=3)
+plt.tight_layout()
+plt.show()
 
 # COMMAND ----------
 
